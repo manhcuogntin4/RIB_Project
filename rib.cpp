@@ -5,22 +5,56 @@
 #include<iostream>
 #include <sstream>
 #include <regex>
-#include<string>
 #include <algorithm>
+#include <string>
 using namespace std;
 using namespace cv;
-
+#include <stdio.h>
+#include <stdlib.h>
 
 typedef struct RIB{
 
     string IB;
     string name;
-    int IB_confidence;
-    int name_confidence;
+    float IB_confidence;
+    float name_confidence;
 } ;
 
 
-RIB getIBAN_Name(tesseract::TessBaseAPI *api, Boxa* box){
+string correct_IBAN(string &ll){
+  int found;
+  string temp="";
+  int j=0;
+  string strCheck="FR0123456789 ";
+  for (unsigned i=0; i<ll.length(); ++i)
+  {
+    
+    found = std::find(strCheck.begin(), strCheck.end(), ll.at(i)) != strCheck.end();
+    if(found !=0){
+        if(ll.at(i)!=' ' or (i>1 and ll.at(i-1)!=' ') )
+            temp=temp+ll.at(i);
+    }
+
+  }
+  // trim leading spaces
+    size_t startpos = temp.find_first_not_of(" \t");
+    if( string::npos != startpos )
+    {
+        temp = temp.substr( startpos );
+    }
+
+  if(temp[1]!='R')
+  {
+     temp[1]='R';
+
+  } 
+    
+  if(temp[0]!='F')
+    temp[0]='F';
+  return temp;
+}
+
+void getIBAN_Name(tesseract::TessBaseAPI *api, Boxa* box, RIB &rb){
     RIB r;
     r.IB="";
     r.IB_confidence=0;
@@ -31,24 +65,27 @@ RIB getIBAN_Name(tesseract::TessBaseAPI *api, Boxa* box){
         BOX* b = boxaGetBox(box, z, L_CLONE);
         api->SetRectangle(b->x, b->y, b->w, b->h);
         char* text = api->GetUTF8Text();
-        int confidence = api->MeanTextConf();
+        float confidence = api->MeanTextConf();
         string ll(text);
         std::smatch m;
-        std::regex e1 ("(.*)(FR)(.*)([0-9]{2})(.+)([0-9]{4})(.+)([0-9]{4})(.*)");
-        std::regex e2 ("(MADEMOISELLE)|(MMME)|(MR )|(M\\.)|(M )|(MONSIEUR )|(MADAME )|(ASS )");
+        //std::regex e1 ("(.*)(FR)(.*)([0-9]{2})(.+)([0-9]{4})(.+)([0-9]{4})(.*)");
+        std::regex e1 ("(FR)([0-9]{2})(.*)([0-9]{4})(.*)|(F)(.+)([0-9]{2})(.*)([0-9]{4})|(R)([0-9]{2})(.*)([0-9]{4})(.*)");
+        
+        std::regex e2 ("(MADEMOISELLE)|(MMME)|(MME)|(MR )|(MLLE)|(M\\.)|(M )|(MONSIEUR )|(MADAME )|(ASS )");
         if(std::regex_search (ll,m,e1))
         {
-            r.IB=ll;
+            r.IB=ll.substr(m.position(0),ll.length());
+            //cout<<"found IBAN"<<endl;
             r.IB_confidence=confidence;
         }
         if(std::regex_search (ll,m,e2))
         {
-            r.name=ll;
+            r.name=ll.substr(m.position(0),ll.length());
             r.name_confidence=confidence;
         }
 
     }
-    return r;
+    rb=r;
 
 }
 
@@ -92,8 +129,8 @@ string getIBAN(tesseract::TessBaseAPI *api, Boxa* box){
         int confidence = api->MeanTextConf();
         string ll(text);
         std::smatch m;
+        //std::regex e ("(.*)(FR)(.*)([0-9]{2})(.+)([0-9]{4})(.+)([0-9]{4})(.*)");
         std::regex e ("(.*)(FR)(.*)([0-9]{2})(.+)([0-9]{4})(.+)([0-9]{4})(.*)");
-
         if(std::regex_search (ll,m,e))
             {
             return ll + ": confidence :" + std::to_string(confidence);
@@ -139,6 +176,7 @@ int main(int argc, char* argv[])
     tesseract::TessBaseAPI *api = new tesseract::TessBaseAPI();
     // Initialize tesseract-ocr with English, without specifying tessdata path
     if (api->Init(NULL, "eng")) {
+        api->SetPageSegMode(tesseract::PSM_AUTO_OSD);
         fprintf(stderr, "Could not initialize tesseract.\n");
         exit(1);
     }
@@ -149,6 +187,11 @@ int main(int argc, char* argv[])
     	image = pixRead("rib.jpg");
     else
     	image = pixRead(argv[1]);
+    
+    string command = "./textcleaner";
+    command = command + " "  + argv[1] +" " + "out.png";
+    system(command.c_str());
+    image = pixRead("out.png");
     api->SetImage(image);
     // Get OCR result
     outText = api->GetUTF8Text();
@@ -157,13 +200,14 @@ int main(int argc, char* argv[])
     //cout<<"Name: "<<getName(api, box)<<endl;
 
 
-    r=getIBAN_Name(api,box);
+    getIBAN_Name(api,box,r);
     int angle=30;
     RIB max;
     max=r;
+    Mat src = imread(argv[1]);
 
-    while(angle <360 and max.IB_confidence<0.8){
-        Mat src = imread(argv[1]);
+    while(angle < 360 && max.IB_confidence < 80){
+        
         Mat dst;
         dst = rotate_notcrop(src, angle);
         imwrite("tmp.png",dst);
@@ -172,16 +216,17 @@ int main(int argc, char* argv[])
         api->SetImage(image);
         outText = api->GetUTF8Text();
         Boxa* box = api->GetComponentImages(tesseract::RIL_TEXTLINE, true, NULL, NULL); 
-        r=getIBAN_Name(api,box);
-        angle+=30;
+        getIBAN_Name(api,box,r);
         if(max.IB_confidence<r.IB_confidence)
             max=r;
+        angle+=30;
+        cout<<"confidence "<< max.IB_confidence<< ": angle : " << angle<< endl;
 
 
     }
-    cout<<max.IB<< ": Confidence "<< max.IB_confidence<<endl;
-    cout<<max.name<<": Confidence "<< max.name_confidence<<endl;
 
+    cout<<correct_IBAN(max.IB)<< ": Confidence "<< max.IB_confidence<<endl;
+    cout<<max.name<<": Confidence "<< max.name_confidence<<endl;
     api->End();
     delete [] outText;
     pixDestroy(&image);
